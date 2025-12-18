@@ -1,0 +1,55 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Public course images
+    match /courses/{courseId}/thumbnails/{fileName} {
+      allow read: if true;
+      allow write: if request.auth != null && 
+        request.auth.token.role == 'admin';
+    }
+    
+    // Course content - accessible to enrolled users
+    match /courses/{courseId}/content/{allPaths=**} {
+      allow read: if request.auth != null && 
+        (exists(/databases/$(database)/documents/enrollments/$(request.auth.uid)_$(courseId)) ||
+         request.auth.token.role == 'admin');
+      allow write: if request.auth != null && 
+        request.auth.token.role == 'admin';
+    }
+    
+    // User avatars
+    match /users/{userId}/avatar/{fileName} {
+      allow read: if true;
+      allow write: if request.auth != null && 
+        request.auth.uid == userId;
+    }
+    
+    // User documents - private
+    match /users/{userId}/documents/{fileName} {
+      allow read: if request.auth != null && 
+        request.auth.uid == userId;
+      allow write: if request.auth != null && 
+        request.auth.uid == userId;
+    }
+    
+    // Certificates - public
+    match /certificates/{certificateId}/{fileName} {
+      allow read: if true;
+      allow write: if request.auth != null && 
+        request.auth.token.role == 'admin';
+    }
+    
+    // System files - admin only
+    match /system/{allPaths=**} {
+      allow read, write: if request.auth != null && 
+        request.auth.token.role == 'admin';
+    }
+    
+    // Temporary uploads
+    match /temp/{allPaths=**} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+      allow delete: if request.auth != null;
+    }
+  }
+}

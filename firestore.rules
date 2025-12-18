@@ -1,0 +1,377 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ======================
+    // HELPER FUNCTIONS
+    // ======================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+             (request.auth.token.email == 'stepstosucceed1@gmail.com' ||
+              request.auth.token.admin == true ||
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
+    }
+    
+    function isCourseInstructor(courseId) {
+      return isAdmin(); // For now, only admin can be instructor
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isEnrolled(courseId) {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)/enrollments/$(courseId));
+    }
+    
+    function canTakeAssessment(courseId, assessmentType) {
+      if (!isEnrolled(courseId)) {
+        return false;
+      }
+      
+      if (assessmentType == 'mid') {
+        let progressRef = get(/databases/$(database)/documents/users/$(request.auth.uid)/courseProgress/$(courseId));
+        return progressRef.data.completedLessons >= (progressRef.data.totalLessons * 0.5);
+      }
+      
+      if (assessmentType == 'final') {
+        let progressRef = get(/databases/$(database)/documents/users/$(request.auth.uid)/courseProgress/$(courseId));
+        return progressRef.data.completedLessons == progressRef.data.totalLessons && 
+               progressRef.data.midAssessmentPassed == true;
+      }
+      
+      return true;
+    }
+    
+    // ======================
+    // CHAT MESSAGES COLLECTION (AI CHATBOT)
+    // ======================
+    match /chat_messages/{messageId} {
+      // Anyone can create chat messages
+      allow create: if true;
+      
+      // Users can read their own or anonymous messages
+      allow read: if isAuthenticated() && 
+                   (request.auth.uid == resource.data.userId || 
+                    resource.data.userId == 'anonymous');
+      
+      // No updates or deletions
+      allow update, delete: if false;
+    }
+    
+    // ======================
+    // STUDENT PROGRESS COLLECTION (MAIN PROGRESS TRACKING)
+    // ======================
+    match /student_progress/{progressId} {
+      // Students can create their own progress
+      allow create: if isAuthenticated();
+      
+      // Students can read/update their own progress
+      allow read, update: if isAuthenticated() && 
+                            request.auth.uid == resource.data.studentId;
+      
+      // Admin can read/update any progress
+      allow read, update: if isAdmin();
+      
+      // Don't allow deletions
+      allow delete: if false;
+    }
+    
+    // ======================
+    // STANDALONE CERTIFICATES COLLECTION
+    // ======================
+    match /certificates/{certificateId} {
+      // Public read for verification
+      allow read: if true;
+      
+      // Admin can create certificates
+      allow create: if isAdmin();
+      
+      // Admin can update certificates
+      allow update: if isAdmin();
+      
+      // Student can update their own certificate if needed
+      allow update: if isAuthenticated() && 
+                     request.auth.uid == resource.data.studentId;
+      
+      // Don't allow deletions
+      allow delete: if false;
+    }
+    
+    // ======================
+    // USERS COLLECTION
+    // ======================
+    match /users/{userId} {
+      // Users can read their own data
+      allow read: if isOwner(userId);
+      
+      // Users can create/update their own profile
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow update: if isOwner(userId);
+      
+      // Admin can read all users
+      allow read: if isAdmin();
+      
+      // Admin can update any user
+      allow update: if isAdmin();
+      
+      // ======================
+      // USER'S ENROLLMENTS SUBCOLLECTION
+      // ======================
+      match /enrollments/{courseId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if isOwner(userId) || isAdmin();
+      }
+      
+      // ======================
+      // USER'S COURSE PROGRESS SUBCOLLECTION (LEGACY)
+      // ======================
+      match /courseProgress/{courseId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if isOwner(userId) || isAdmin();
+      }
+      
+      // ======================
+      // USER'S ASSESSMENT RESULTS
+      // ======================
+      match /assessmentResults/{resultId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId);
+        allow update: if isAdmin();
+      }
+      
+      // ======================
+      // USER'S ASSESSMENT ATTEMPTS
+      // ======================
+      match /assessmentAttempts/{assessmentId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if isOwner(userId);
+        
+        match /answers/{questionId} {
+          allow read: if isOwner(userId) || isAdmin();
+          allow write: if isOwner(userId);
+        }
+      }
+      
+      // ======================
+      // USER'S CERTIFICATES SUBCOLLECTION (LEGACY)
+      // ======================
+      match /certificates/{certificateId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isAdmin();
+        allow update: if isAdmin();
+      }
+    }
+    
+    // ======================
+    // COURSES COLLECTION
+    // ======================
+    match /courses/{courseId} {
+      // Anyone can read courses
+      allow read: if true;
+      
+      // Only admin can write
+      allow write: if isAdmin();
+      
+      // ======================
+      // COURSE ASSESSMENTS SUBCOLLECTION
+      // ======================
+      match /assessments/{assessmentId} {
+        // Students can read if enrolled
+        allow read: if isAuthenticated() && isEnrolled(courseId);
+        
+        // Admin can create/update
+        allow write: if isAdmin();
+        
+        match /questions/{questionId} {
+          allow read: if isAuthenticated() && isEnrolled(courseId);
+          allow write: if isAdmin();
+        }
+      }
+      
+      // ======================
+      // COURSE LESSONS SUBCOLLECTION
+      // ======================
+      match /lessons/{lessonId} {
+        allow read: if isAuthenticated() && isEnrolled(courseId);
+        allow write: if isAdmin();
+      }
+    }
+    
+    // ======================
+    // STANDALONE ENROLLMENTS COLLECTION
+    // ======================
+    match /enrollments/{enrollmentId} {
+      // Users can create enrollments
+      allow create: if isAuthenticated();
+      
+      // Users can read/update their own enrollments
+      allow read, update: if isAuthenticated() && 
+                            request.auth.uid == resource.data.studentId;
+      
+      // Admin can read/update all enrollments
+      allow read, update: if isAdmin();
+    }
+    
+    // ======================
+    // PAYMENTS COLLECTION
+    // ======================
+    match /payments/{paymentId} {
+      // Users can read their own payments
+      allow read: if isAuthenticated() && 
+                    (request.auth.uid == resource.data.userId || isAdmin());
+      
+      // Users can create payments
+      allow create: if isAuthenticated() && 
+                      request.resource.data.userId == request.auth.uid;
+      
+      // Admin can update payments
+      allow update: if isAdmin();
+    }
+    
+    // ======================
+    // STANDALONE ASSESSMENTS COLLECTION
+    // ======================
+    match /assessments/{assessmentId} {
+      // Users can read their own assessments
+      allow read: if isAuthenticated() && 
+                    (request.auth.uid == resource.data.userId || isAdmin());
+      
+      // Users can create assessments
+      allow create: if isAuthenticated();
+      
+      // Admin can update assessments
+      allow update: if isAdmin();
+    }
+    
+    // ======================
+    // CATEGORIES COLLECTION
+    // ======================
+    match /categories/{categoryId} {
+      // Anyone can read categories
+      allow read: if true;
+      
+      // Only admin can write
+      allow write: if isAdmin();
+    }
+    
+    // ======================
+    // COURSE CONTENTS COLLECTION
+    // ======================
+    match /course_contents/{contentId} {
+      // Users can read if enrolled
+      allow read: if isAuthenticated() && 
+                    isEnrolled(resource.data.courseId);
+      
+      // Only admin can write
+      allow write: if isAdmin();
+    }
+    
+    // ======================
+    // COURSE REVIEWS COLLECTION
+    // ======================
+    match /course_reviews/{reviewId} {
+      // Anyone can read reviews
+      allow read: if true;
+      
+      // Users can create reviews for completed courses
+      allow create: if isAuthenticated() && 
+                      request.auth.uid == request.resource.data.studentId;
+      
+      // Users can update their own reviews
+      allow update: if isAuthenticated() && 
+                      request.auth.uid == resource.data.studentId;
+      
+      // Admin can update/delete any review
+      allow update, delete: if isAdmin();
+    }
+    
+    // ======================
+    // COURSE COMPLETIONS COLLECTION
+    // ======================
+    match /course_completions/{completionId} {
+      // System/admin can create completions
+      allow create: if isAuthenticated() && isAdmin();
+      
+      // Users can read their own completions
+      allow read: if isAuthenticated() && 
+                    request.auth.uid == resource.data.studentId;
+      
+      // Admin can read all completions
+      allow read: if isAdmin();
+      
+      // Only admin can update/delete
+      allow update, delete: if isAdmin();
+    }
+    
+    // ======================
+    // NOTIFICATIONS COLLECTION
+    // ======================
+    match /notifications/{notificationId} {
+      // System can create notifications
+      allow create: if true;
+      
+      // Users can read their own notifications
+      allow read: if isAuthenticated() && 
+                    request.auth.uid == resource.data.userId;
+      
+      // Users can mark as read
+      allow update: if isAuthenticated() && 
+                      request.auth.uid == resource.data.userId &&
+                      request.resource.data.read == true;
+      
+      // Admin can read/update all notifications
+      allow read, update: if isAdmin();
+    }
+    
+    // ======================
+    // DATA DELETION REQUESTS
+    // ======================
+    match /data_deletion_requests/{requestId} {
+      // Users can create deletion requests
+      allow create: if isAuthenticated();
+      
+      // Users can read their own requests
+      allow read: if isAuthenticated() && 
+                    request.auth.uid == resource.data.userId;
+      
+      // Admin can read all requests
+      allow read: if isAdmin();
+      
+      // Only admin can update/delete requests
+      allow update, delete: if isAdmin();
+    }
+    
+    // ======================
+    // SYSTEM LOGS COLLECTION
+    // ======================
+    match /system_logs/{logId} {
+      // Only admin can read logs
+      allow read: if isAdmin();
+      
+      // System can create logs
+      allow create: if true;
+      
+      // Only admin can update/delete logs
+      allow update, delete: if isAdmin();
+    }
+    
+    // ======================
+    // SECURITY VIOLATIONS COLLECTION
+    // ======================
+    match /securityViolations/{violationId} {
+      // Only admin can read security violations
+      allow read: if isAdmin();
+      
+      // Anyone can create (system will log violations)
+      allow create: if true;
+      
+      // Only admin can update/delete
+      allow update, delete: if isAdmin();
+    }
+  }
+}
