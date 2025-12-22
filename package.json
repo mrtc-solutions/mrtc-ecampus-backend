@@ -52,4 +52,9 @@
     "url": "https://github.com/YourUsername/mrtc-ecampus-backend/issues"
   },
   "homepage": "https://github.com/YourUsername/mrtc-ecampus-backend#readme"
+  },
+  "scripts": {
+    "dev": "live-server . --port=8080 --open=login.html",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  }
 }

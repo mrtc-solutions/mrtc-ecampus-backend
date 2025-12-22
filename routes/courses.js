@@ -13,7 +13,7 @@ const { authenticate, requireAdmin } = require('../middleware/auth');
 const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
-        fileSize: 100 * 1024 * 1024 // 100MB limit
+        fileSize: 500 * 1024 * 1024 // 500MB limit for videos
     }
 });
 
@@ -21,7 +21,10 @@ const upload = multer({
 // PUBLIC COURSE ROUTES
 // ======================
 
-// Get courses with pagination and filters
+/**
+ * Get courses with pagination and filters
+ * GET /api/courses?page=1&limit=12&category=tech&search=python
+ */
 router.get('/', async (req, res) => {
     try {
         const { 
@@ -38,64 +41,147 @@ router.get('/', async (req, res) => {
             limit: parseInt(limit),
             category,
             filter,
-            search
+            search,
+            sort
         });
 
-        res.json({ success: true, ...courses });
+        res.json({ 
+            success: true, 
+            ...courses 
+        });
+
     } catch (error) {
-        console.error('Get courses error:', error);
-        res.status(500).json({ error: 'Failed to get courses' });
+        console.error('❌ Get courses error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to get courses' 
+        });
     }
 });
 
-// Get single course by ID
+/**
+ * Get single course by ID
+ * GET /api/courses/:courseId
+ */
 router.get('/:courseId', async (req, res) => {
     try {
-        const course = await courseService.getCourseById(req.params.courseId);
+        const { courseId } = req.params;
+
+        const courseDoc = await admin.firestore().collection('courses').doc(courseId).get();
+
+        if (!courseDoc.exists) {
+            return res.status(404).json({ 
+                success: false,
+                error: 'Course not found' 
+            });
+        }
+
+        const course = {
+            id: courseDoc.id,
+            ...courseDoc.data()
+        };
+
+        res.json({ 
+            success: true, 
+            course 
+        });
+
+    } catch (error) {
+        console.error('❌ Get course error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to get course' 
+        });
+    }
+});
+
+/**
+ * Get course categories
+ * GET /api/courses/list/categories
+ */
+router.get('/list/categories', async (req, res) => {
+    try {
+        const snapshot = await admin.firestore().collection('courses').get();
+        const categories = new Set();
+
+        snapshot.forEach(doc => {
+            const data = doc.data();
+            if (data.category) {
+                categories.add(data.category);
+            }
+        });
+
+        res.json({ 
+            success: true, 
+            categories: Array.from(categories).sort() 
+        });
+
+    } catch (error) {
+        console.error('❌ Get categories error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to get categories' 
+        });
+    }
+});
+
+/**
+ * Get course recommendations
+ * GET /api/courses/:courseId/recommendations
+ */
+router.get('/:courseId/recommendations', async (req, res) => {
+    try {
+        const { courseId } = req.params;
+        const limit = req.query.limit || 4;
+
+        const courseDoc = await admin.firestore().collection('courses').doc(courseId).get();
         
-        if (!course) {
+        if (!courseDoc.exists) {
             return res.status(404).json({ error: 'Course not found' });
         }
 
-        res.json({ success: true, course });
+        const courseData = courseDoc.data();
+        const { category } = courseData;
+
+        // Find similar courses
+        const snapshot = await admin.firestore().collection('courses')
+            .where('category', '==', category)
+            .where('status', '==', 'published')
+            .limit(parseInt(limit) + 1)
+            .get();
+
+        const recommendations = snapshot.docs
+            .filter(doc => doc.id !== courseId)
+            .slice(0, limit)
+            .map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+
+        res.json({ 
+            success: true, 
+            recommendations 
+        });
+
     } catch (error) {
-        console.error('Get course error:', error);
-        res.status(500).json({ error: 'Failed to get course' });
+        console.error('❌ Get recommendations error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to get recommendations' 
+        });
     }
 });
 
-// Get course categories
-router.get('/categories', async (req, res) => {
-    try {
-        const categories = await courseService.getCourseCategories();
-        res.json({ success: true, categories });
-    } catch (error) {
-        console.error('Get categories error:', error);
-        res.status(500).json({ error: 'Failed to get categories' });
-    }
-});
-
-// Get course recommendations
-router.get('/:courseId/recommendations', async (req, res) => {
-    try {
-        const recommendations = await courseService.getCourseRecommendations(
-            req.params.courseId,
-            req.query.limit || 4
-        );
-        res.json({ success: true, recommendations });
-    } catch (error) {
-        console.error('Get recommendations error:', error);
-        res.status(500).json({ error: 'Failed to get recommendations' });
-    }
-});
-
-// Get course reviews
+/**
+ * Get course reviews
+ * GET /api/courses/:courseId/reviews
+ */
 router.get('/:courseId/reviews', async (req, res) => {
     try {
         const { page = 1, limit = 10, sort = 'recent' } = req.query;
         const { courseId } = req.params;
 
-        let query = req.db.collection('course_reviews')
+        let query = admin.firestore().collection('course_reviews')
             .where('courseId', '==', courseId)
             .where('isVerified', '==', true);
 
@@ -105,19 +191,19 @@ router.get('/:courseId/reviews', async (req, res) => {
             query = query.orderBy('createdAt', 'desc');
         }
 
-        const snapshot = await query.limit(parseInt(limit)).get();
-        const reviews = [];
+        const snapshot = await query
+            .limit(parseInt(limit) * parseInt(page))
+            .get();
 
-        snapshot.forEach(doc => {
-            const data = doc.data();
-            reviews.push({
+        const reviews = snapshot.docs
+            .slice((parseInt(page) - 1) * parseInt(limit))
+            .map(doc => ({
                 id: doc.id,
-                ...data,
-                createdAt: data.createdAt?.toDate()
-            });
-        });
+                ...doc.data(),
+                createdAt: doc.data().createdAt?.toDate()
+            }));
 
-        const totalSnapshot = await req.db.collection('course_reviews')
+        const totalSnapshot = await admin.firestore().collection('course_reviews')
             .where('courseId', '==', courseId)
             .where('isVerified', '==', true)
             .get();
@@ -129,9 +215,13 @@ router.get('/:courseId/reviews', async (req, res) => {
             page: parseInt(page),
             totalPages: Math.ceil(totalSnapshot.size / limit)
         });
+
     } catch (error) {
-        console.error('Get reviews error:', error);
-        res.status(500).json({ error: 'Failed to get reviews' });
+        console.error('❌ Get reviews error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to get reviews' 
+        });
     }
 });
 
@@ -139,280 +229,463 @@ router.get('/:courseId/reviews', async (req, res) => {
 // AUTHENTICATED USER ROUTES
 // ======================
 
-// Enroll in course
+/**
+ * Enroll in course
+ * POST /api/courses/:courseId/enroll
+ */
 router.post('/:courseId/enroll', authenticate, async (req, res) => {
     try {
         const { courseId } = req.params;
         const { isFree = false } = req.body;
 
-        const result = await courseService.enrollStudent(
-            courseId,
-            req.user.uid,
-            req.user.email,
-            isFree
-        );
+        // Check if already enrolled
+        const enrollmentSnap = await admin.firestore().collection('enrollments')
+            .where('courseId', '==', courseId)
+            .where('studentId', '==', req.user.uid)
+            .get();
 
-        res.json(result);
-    } catch (error) {
-        console.error('Enrollment error:', error);
-        res.status(500).json({ error: error.message || 'Failed to enroll in course' });
-    }
-});
-
-// Process course purchase
-router.post('/:courseId/purchase', authenticate, async (req, res) => {
-    try {
-        const { courseId } = req.params;
-        const { amount, method, transactionId } = req.body;
-
-        // Payment validation
-        const course = await courseService.getCourseById(courseId);
-        const coursePrice = course.price || 0;
-
-        if (parseFloat(amount) < coursePrice) {
+        if (!enrollmentSnap.empty) {
             return res.status(400).json({
-                error: 'Insufficient payment',
-                message: `Payment amount (${amount}) is less than required course price (${coursePrice})`
+                success: false,
+                error: 'Already enrolled in this course'
             });
         }
 
-        const result = await courseService.processCoursePurchase(courseId, req.user.uid, {
-            amount: parseFloat(amount),
-            method,
-            transactionId
+        // Create enrollment record
+        const enrollmentRef = admin.firestore().collection('enrollments').doc();
+
+        await enrollmentRef.set({
+            id: enrollmentRef.id,
+            courseId: courseId,
+            studentId: req.user.uid,
+            studentEmail: req.user.email,
+            enrolledAt: admin.firestore.FieldValue.serverTimestamp(),
+            progress: 0,
+            completed: false,
+            isFree: isFree,
+            certificateId: null,
+            lastAccessedAt: admin.firestore.FieldValue.serverTimestamp()
         });
 
-        res.json(result);
+        res.json({
+            success: true,
+            message: 'Successfully enrolled in course',
+            enrollmentId: enrollmentRef.id
+        });
+
     } catch (error) {
-        console.error('Purchase error:', error);
-        res.status(500).json({ error: error.message || 'Failed to process purchase' });
+        console.error('❌ Enrollment error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message || 'Failed to enroll in course' 
+        });
     }
 });
 
-// Get student's enrolled courses
+/**
+ * Get student's enrolled courses
+ * GET /api/courses/student/enrolled
+ */
 router.get('/student/enrolled', authenticate, async (req, res) => {
     try {
-        const courses = await courseService.getStudentCourses(req.user.uid);
-        res.json({ success: true, courses });
+        const enrollments = await admin.firestore().collection('enrollments')
+            .where('studentId', '==', req.user.uid)
+            .orderBy('enrolledAt', 'desc')
+            .get();
+
+        const courses = [];
+
+        for (const enrollment of enrollments.docs) {
+            const enrollmentData = enrollment.data();
+            const courseDoc = await admin.firestore().collection('courses')
+                .doc(enrollmentData.courseId)
+                .get();
+
+            if (courseDoc.exists) {
+                courses.push({
+                    id: courseDoc.id,
+                    ...courseDoc.data(),
+                    enrollment: {
+                        enrollmentId: enrollment.id,
+                        enrolledAt: enrollmentData.enrolledAt?.toDate(),
+                        progress: enrollmentData.progress,
+                        completed: enrollmentData.completed,
+                        lastAccessedAt: enrollmentData.lastAccessedAt?.toDate()
+                    }
+                });
+            }
+        }
+
+        res.json({ 
+            success: true, 
+            courses,
+            count: courses.length 
+        });
+
     } catch (error) {
-        console.error('Get student courses error:', error);
-        res.status(500).json({ error: 'Failed to get student courses' });
+        console.error('❌ Get student courses error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to get student courses' 
+        });
     }
 });
 
-// Submit course review
+/**
+ * Submit course review
+ * POST /api/courses/:courseId/review
+ */
 router.post('/:courseId/review', authenticate, async (req, res) => {
     try {
         const { rating, comment } = req.body;
         const { courseId } = req.params;
         const userId = req.user.uid;
 
+        // Validate rating
+        if (!rating || rating < 1 || rating > 5) {
+            return res.status(400).json({
+                success: false,
+                error: 'Rating must be between 1 and 5'
+            });
+        }
+
         // Check if student has completed course
-        const enrollmentSnapshot = await req.db.collection('enrollments')
+        const enrollmentSnapshot = await admin.firestore().collection('enrollments')
             .where('courseId', '==', courseId)
             .where('studentId', '==', userId)
-            .where('progress', '==', 100)
+            .where('completed', '==', true)
             .get();
 
         if (enrollmentSnapshot.empty) {
             return res.status(400).json({
-                error: 'Cannot review',
-                message: 'You must complete the course before reviewing'
+                success: false,
+                error: 'You must complete the course before reviewing'
             });
         }
 
         // Check if already reviewed
-        const existingReview = await req.db.collection('course_reviews')
+        const existingReview = await admin.firestore().collection('course_reviews')
             .where('courseId', '==', courseId)
             .where('studentId', '==', userId)
             .get();
 
         if (!existingReview.empty) {
             return res.status(400).json({
-                error: 'Already reviewed',
-                message: 'You have already reviewed this course'
+                success: false,
+                error: 'You have already reviewed this course'
             });
         }
 
         // Create review
-        const reviewId = req.db.collection('course_reviews').doc().id;
-        await req.db.collection('course_reviews').doc(reviewId).set({
-            reviewId,
-            courseId,
+        const reviewRef = admin.firestore().collection('course_reviews').doc();
+
+        await reviewRef.set({
+            id: reviewRef.id,
+            courseId: courseId,
             studentId: userId,
-            studentName: req.user.name || req.user.email.split('@')[0],
+            studentName: req.user.displayName || req.user.email.split('@')[0],
             studentEmail: req.user.email,
             rating: parseInt(rating),
-            comment,
+            comment: comment || '',
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             isVerified: true,
-            helpful: 0
+            helpful: 0,
+            reported: false
         });
 
-        // Update course rating
-        const result = await courseService.updateCourseRating(courseId, parseInt(rating));
+        // Update course rating average
+        const courseDoc = await admin.firestore().collection('courses').doc(courseId).get();
+        const courseData = courseDoc.data();
 
-        res.json({ 
-            success: true, 
+        const newRating = (
+            ((courseData.averageRating || 0) * (courseData.reviewCount || 0)) + parseInt(rating)
+        ) / ((courseData.reviewCount || 0) + 1);
+
+        await courseDoc.ref.update({
+            averageRating: newRating,
+            reviewCount: (courseData.reviewCount || 0) + 1
+        });
+
+        res.json({
+            success: true,
             message: 'Review submitted successfully',
-            ...result
+            reviewId: reviewRef.id,
+            courseRating: newRating
         });
+
     } catch (error) {
-        console.error('Submit review error:', error);
-        res.status(500).json({ error: 'Failed to submit review' });
+        console.error('❌ Submit review error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to submit review' 
+        });
     }
 });
 
 // ======================
-// GOOGLE DRIVE FILE MANAGEMENT
+// 🆕 GOOGLE DRIVE FILE UPLOADS
 // ======================
 
-// Upload course content (video, PDF, HTML, text)
+/**
+ * Upload course content (video, PDF, HTML, text)
+ * POST /api/courses/:courseId/upload
+ */
 router.post('/:courseId/upload', authenticate, requireAdmin, upload.single('file'), async (req, res) => {
     try {
         const { courseId } = req.params;
         const { lessonId, description } = req.body;
         const file = req.file;
 
+        // ✅ VALIDATE REQUEST
         if (!file) {
-            return res.status(400).json({ error: 'No file uploaded' });
+            return res.status(400).json({ 
+                success: false,
+                error: 'No file uploaded' 
+            });
         }
 
-        // Validate file
-        const sizeValidation = googleDriveService.validateFileSize(file.buffer, 100);
+        // Validate file size
+        const sizeValidation = googleDriveService.validateFileSize(file.buffer, 500);
         if (!sizeValidation.valid) {
-            return res.status(400).json({ error: sizeValidation.error });
+            return res.status(400).json({ 
+                success: false,
+                error: sizeValidation.error 
+            });
         }
 
-        const mimeType = file.mimetype;
-        const typeValidation = googleDriveService.validateFileType(mimeType, [
-            'image', 'video', 'audio', 'pdf', 'text'
-        ]);
+        // Validate file type
+        const supportedTypes = googleDriveService.getSupportedFileTypes();
+        const allSupportedMimes = Object.values(supportedTypes).flat();
+        
+        const typeValidation = googleDriveService.validateFileType(file.mimetype, allSupportedMimes);
         if (!typeValidation.valid) {
-            return res.status(400).json({ error: typeValidation.error });
+            return res.status(400).json({ 
+                success: false,
+                error: typeValidation.error 
+            });
         }
 
-        // Upload to Google Drive
+        console.log(`📤 Uploading file "${file.originalname}" for course ${courseId}`);
+
+        // ✅ STEP 1: UPLOAD TO GOOGLE DRIVE
         const uploadResult = await googleDriveService.uploadCourseContent(
-            courseId,
             file.buffer,
             file.originalname,
-            mimeType,
-            lessonId
+            file.mimetype,
+            courseId,
+            lessonId || null
         );
 
         if (!uploadResult.success) {
-            return res.status(500).json({ error: uploadResult.error });
+            return res.status(500).json({ 
+                success: false,
+                error: uploadResult.error 
+            });
         }
 
-        // Save to Firestore
-        const contentRef = req.db.collection('course_contents').doc();
-        
+        console.log(`✅ Google Drive upload successful: ${uploadResult.googleDriveFileId}`);
+
+        // ✅ STEP 2: SAVE METADATA TO FIRESTORE
+        const db = admin.firestore();
+        const contentRef = db.collection('course_contents').doc();
+
         await contentRef.set({
             id: contentRef.id,
             courseId: courseId,
             lessonId: lessonId || null,
-            type: mimeType.split('/')[0],
-            mimeType: mimeType,
+            type: file.mimetype.split('/')[0],
+            mimeType: file.mimetype,
             fileName: file.originalname,
             fileSize: file.size,
             description: description || '',
+            // 🆕 Google Drive metadata
             googleDriveFileId: uploadResult.googleDriveFileId,
             googleDriveUrl: uploadResult.viewUrl,
             downloadUrl: uploadResult.downloadUrl,
+            // Folder IDs for organization
+            courseFolderId: uploadResult.courseFolderId,
+            lessonFolderId: uploadResult.lessonFolderId,
+            // Timestamps
             uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
             uploadedBy: req.user.uid,
             status: 'active'
         });
 
+        console.log(`✅ Firestore record created: ${contentRef.id}`);
+
+        // ✅ STEP 3: UPDATE COURSE DOCUMENT (auto-increment content count)
+        const courseDoc = await db.collection('courses').doc(courseId).get();
+        if (courseDoc.exists) {
+            const courseData = courseDoc.data();
+            await courseDoc.ref.update({
+                contentCount: (courseData.contentCount || 0) + 1,
+                lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+            });
+        }
+
+        // ✅ RESPONSE
         res.json({
             success: true,
             message: 'Content uploaded successfully',
             data: {
                 contentId: contentRef.id,
+                courseId: courseId,
                 fileName: file.originalname,
-                type: mimeType.split('/')[0],
-                mimeType: mimeType,
+                type: file.mimetype.split('/')[0],
+                mimeType: file.mimetype,
                 size: file.size,
-                url: uploadResult.viewUrl,
+                // Access URLs
+                viewUrl: uploadResult.viewUrl,
                 downloadUrl: uploadResult.downloadUrl,
+                googleDriveFileId: uploadResult.googleDriveFileId,
+                // Folder organization
                 courseFolderId: uploadResult.courseFolderId,
-                lessonFolderId: uploadResult.lessonFolderId
+                lessonFolderId: uploadResult.lessonFolderId || null,
+                uploadedAt: new Date().toISOString()
             }
         });
 
     } catch (error) {
-        console.error('Upload content error:', error);
-        res.status(500).json({ error: error.message });
+        console.error('❌ Upload content error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message || 'Failed to upload content' 
+        });
     }
 });
 
-// Upload YouTube link (no file upload)
+/**
+ * Upload YouTube link (no file upload needed)
+ * POST /api/courses/:courseId/upload/youtube
+ */
 router.post('/:courseId/upload/youtube', authenticate, requireAdmin, async (req, res) => {
     try {
         const { courseId } = req.params;
         const { youtubeUrl, title, description, lessonId } = req.body;
 
+        // ✅ VALIDATE REQUEST
         if (!youtubeUrl || !title) {
-            return res.status(400).json({ error: 'YouTube URL and title are required' });
+            return res.status(400).json({ 
+                success: false,
+                error: 'YouTube URL and title are required' 
+            });
         }
 
-        // Validate YouTube URL
-        const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.?be)\/.+$/;
-        if (!youtubeRegex.test(youtubeUrl)) {
-            return res.status(400).json({ error: 'Invalid YouTube URL' });
-        }
+        console.log(`📹 Saving YouTube link for course ${courseId}`);
 
-        // Save YouTube link
-        const uploadResult = await googleDriveService.uploadYouTubeLink(
+        // ✅ STEP 1: VALIDATE AND EXTRACT METADATA
+        const youtubeResult = await googleDriveService.uploadYouTubeLink(
             courseId,
             youtubeUrl,
             title,
-            description,
-            lessonId
+            description || '',
+            lessonId || null
         );
 
-        if (!uploadResult.success) {
-            return res.status(500).json({ error: uploadResult.error });
+        if (!youtubeResult.success) {
+            return res.status(400).json({ 
+                success: false,
+                error: youtubeResult.error 
+            });
         }
 
+        // ✅ STEP 2: SAVE TO FIRESTORE
+        const db = admin.firestore();
+        const contentRef = db.collection('course_contents').doc();
+
+        await contentRef.set({
+            id: contentRef.id,
+            courseId: courseId,
+            lessonId: lessonId || null,
+            type: 'youtube',
+            mimeType: 'video/youtube',
+            fileName: title,
+            description: description || '',
+            // YouTube specific
+            youtubeUrl: youtubeUrl,
+            videoId: youtubeResult.videoId,
+            thumbnailUrl: youtubeResult.thumbnailUrl,
+            // Timestamps
+            uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
+            uploadedBy: req.user.uid,
+            status: 'active'
+        });
+
+        console.log(`✅ YouTube link saved to Firestore: ${contentRef.id}`);
+
+        // ✅ STEP 3: UPDATE COURSE
+        const courseDoc = await db.collection('courses').doc(courseId).get();
+        if (courseDoc.exists) {
+            const courseData = courseDoc.data();
+            await courseDoc.ref.update({
+                contentCount: (courseData.contentCount || 0) + 1,
+                lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+            });
+        }
+
+        // ✅ RESPONSE
         res.json({
             success: true,
             message: 'YouTube link saved successfully',
-            data: uploadResult
+            data: {
+                contentId: contentRef.id,
+                courseId: courseId,
+                type: 'youtube',
+                title: title,
+                youtubeUrl: youtubeUrl,
+                videoId: youtubeResult.videoId,
+                thumbnailUrl: youtubeResult.thumbnailUrl,
+                uploadedAt: new Date().toISOString()
+            }
         });
 
     } catch (error) {
-        console.error('Upload YouTube error:', error);
-        res.status(500).json({ error: error.message });
+        console.error('❌ Upload YouTube error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message || 'Failed to save YouTube link' 
+        });
     }
 });
 
-// Upload HTML content as file
+/**
+ * Upload HTML content
+ * POST /api/courses/:courseId/upload/html
+ */
 router.post('/:courseId/upload/html', authenticate, requireAdmin, async (req, res) => {
     try {
         const { courseId } = req.params;
         const { htmlContent, fileName, description, lessonId } = req.body;
 
+        // ✅ VALIDATE REQUEST
         if (!htmlContent || !fileName) {
-            return res.status(400).json({ error: 'HTML content and file name are required' });
+            return res.status(400).json({ 
+                success: false,
+                error: 'HTML content and file name are required' 
+            });
         }
 
-        // Upload HTML content
+        console.log(`📝 Uploading HTML content for course ${courseId}`);
+
+        // ✅ STEP 1: UPLOAD TO GOOGLE DRIVE
         const uploadResult = await googleDriveService.uploadHTMLContent(
             courseId,
             htmlContent,
             fileName,
-            lessonId
+            lessonId || null
         );
 
         if (!uploadResult.success) {
-            return res.status(500).json({ error: uploadResult.error });
+            return res.status(500).json({ 
+                success: false,
+                error: uploadResult.error 
+            });
         }
 
-        // Save to Firestore
-        const contentRef = req.db.collection('course_contents').doc();
-        
+        // ✅ STEP 2: SAVE METADATA TO FIRESTORE
+        const db = admin.firestore();
+        const contentRef = db.collection('course_contents').doc();
+
         await contentRef.set({
             id: contentRef.id,
             courseId: courseId,
@@ -422,39 +695,66 @@ router.post('/:courseId/upload/html', authenticate, requireAdmin, async (req, re
             fileName: fileName,
             fileSize: htmlContent.length,
             description: description || '',
+            // Google Drive metadata
             googleDriveFileId: uploadResult.googleDriveFileId,
             googleDriveUrl: uploadResult.viewUrl,
             downloadUrl: uploadResult.downloadUrl,
+            // Folder IDs
+            courseFolderId: uploadResult.courseFolderId,
+            lessonFolderId: uploadResult.lessonFolderId,
+            // Timestamps
             uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
             uploadedBy: req.user.uid,
             status: 'active'
         });
 
+        // ✅ STEP 3: UPDATE COURSE
+        const courseDoc = await db.collection('courses').doc(courseId).get();
+        if (courseDoc.exists) {
+            const courseData = courseDoc.data();
+            await courseDoc.ref.update({
+                contentCount: (courseData.contentCount || 0) + 1,
+                lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+            });
+        }
+
+        // ✅ RESPONSE
         res.json({
             success: true,
             message: 'HTML content uploaded successfully',
             data: {
                 contentId: contentRef.id,
-                fileName: fileName,
+                courseId: courseId,
                 type: 'html',
-                url: uploadResult.viewUrl,
-                downloadUrl: uploadResult.downloadUrl
+                fileName: fileName,
+                viewUrl: uploadResult.viewUrl,
+                downloadUrl: uploadResult.downloadUrl,
+                googleDriveFileId: uploadResult.googleDriveFileId,
+                uploadedAt: new Date().toISOString()
             }
         });
 
     } catch (error) {
-        console.error('Upload HTML error:', error);
-        res.status(500).json({ error: error.message });
+        console.error('❌ Upload HTML error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message || 'Failed to upload HTML content' 
+        });
     }
 });
 
-// Get course contents
+/**
+ * Get course contents
+ * GET /api/courses/:courseId/contents?lessonId=xxx&type=video
+ */
 router.get('/:courseId/contents', authenticate, async (req, res) => {
     try {
         const { courseId } = req.params;
         const { lessonId, type } = req.query;
 
-        let query = req.db.collection('course_contents').where('courseId', '==', courseId);
+        let query = admin.firestore().collection('course_contents')
+            .where('courseId', '==', courseId)
+            .where('status', '==', 'active');
 
         if (lessonId) {
             query = query.where('lessonId', '==', lessonId);
@@ -464,10 +764,13 @@ router.get('/:courseId/contents', authenticate, async (req, res) => {
             query = query.where('type', '==', type);
         }
 
-        query = query.where('status', '==', 'active').orderBy('uploadedAt', 'desc');
+        const snapshot = await query.orderBy('uploadedAt', 'desc').get();
 
-        const snapshot = await query.get();
-        const contents = snapshot.docs.map(doc => doc.data());
+        const contents = snapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data(),
+            uploadedAt: doc.data().uploadedAt?.toDate()
+        }));
 
         // Get storage usage
         const storageUsage = await googleDriveService.getStorageUsage(courseId);
@@ -476,33 +779,50 @@ router.get('/:courseId/contents', authenticate, async (req, res) => {
             success: true,
             data: {
                 contents: contents,
-                storageUsage: storageUsage.success ? storageUsage : null,
+                storageUsage: storageUsage.success ? {
+                    totalBytes: storageUsage.totalBytes,
+                    totalGB: storageUsage.totalGB,
+                    fileCount: storageUsage.fileCount
+                } : null,
                 count: contents.length
             }
         });
 
     } catch (error) {
-        console.error('Get contents error:', error);
-        res.status(500).json({ error: error.message });
+        console.error('❌ Get contents error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message || 'Failed to get contents' 
+        });
     }
 });
 
-// Delete course content
+/**
+ * Delete course content
+ * DELETE /api/courses/:courseId/contents/:contentId
+ */
 router.delete('/:courseId/contents/:contentId', authenticate, requireAdmin, async (req, res) => {
     try {
         const { courseId, contentId } = req.params;
 
-        const contentDoc = await req.db.collection('course_contents').doc(contentId).get();
+        const db = admin.firestore();
+        const contentDoc = await db.collection('course_contents').doc(contentId).get();
 
         if (!contentDoc.exists) {
-            return res.status(404).json({ error: 'Content not found' });
+            return res.status(404).json({ 
+                success: false,
+                error: 'Content not found' 
+            });
         }
 
         const content = contentDoc.data();
 
         // Verify content belongs to course
         if (content.courseId !== courseId) {
-            return res.status(403).json({ error: 'Content does not belong to this course' });
+            return res.status(403).json({ 
+                success: false,
+                error: 'Content does not belong to this course' 
+            });
         }
 
         // Delete from Google Drive
@@ -513,18 +833,34 @@ router.delete('/:courseId/contents/:contentId', authenticate, requireAdmin, asyn
         // Delete from Firestore
         await contentDoc.ref.delete();
 
+        // Update course
+        const courseDoc = await db.collection('courses').doc(courseId).get();
+        if (courseDoc.exists) {
+            const courseData = courseDoc.data();
+            await courseDoc.ref.update({
+                contentCount: Math.max(0, (courseData.contentCount || 1) - 1),
+                lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+            });
+        }
+
         res.json({
             success: true,
             message: 'Content deleted successfully'
         });
 
     } catch (error) {
-        console.error('Delete content error:', error);
-        res.status(500).json({ error: error.message });
+        console.error('❌ Delete content error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message || 'Failed to delete content' 
+        });
     }
 });
 
-// Get storage usage
+/**
+ * Get storage usage for a course
+ * GET /api/courses/:courseId/storage
+ */
 router.get('/:courseId/storage', authenticate, requireAdmin, async (req, res) => {
     try {
         const { courseId } = req.params;
@@ -532,7 +868,10 @@ router.get('/:courseId/storage', authenticate, requireAdmin, async (req, res) =>
         const usage = await googleDriveService.getStorageUsage(courseId);
 
         if (!usage.success) {
-            return res.status(500).json({ error: usage.error });
+            return res.status(500).json({ 
+                success: false,
+                error: usage.error 
+            });
         }
 
         res.json({
@@ -541,8 +880,11 @@ router.get('/:courseId/storage', authenticate, requireAdmin, async (req, res) =>
         });
 
     } catch (error) {
-        console.error('Get storage usage error:', error);
-        res.status(500).json({ error: error.message });
+        console.error('❌ Get storage usage error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message || 'Failed to get storage usage' 
+        });
     }
 });
 
@@ -550,80 +892,238 @@ router.get('/:courseId/storage', authenticate, requireAdmin, async (req, res) =>
 // ADMIN COURSE MANAGEMENT
 // ======================
 
-// Create new course
+/**
+ * Create new course
+ * POST /api/courses/admin/create
+ */
 router.post('/admin/create', authenticate, requireAdmin, async (req, res) => {
     try {
-        const result = await courseService.saveCourse(req.body, req.user.uid);
-        res.json(result);
+        const { title, description, category, price, instructor } = req.body;
+
+        // Validate required fields
+        if (!title || !description || !category) {
+            return res.status(400).json({
+                success: false,
+                error: 'Title, description, and category are required'
+            });
+        }
+
+        const db = admin.firestore();
+        const courseRef = db.collection('courses').doc();
+
+        // ✅ CREATE COURSE DOCUMENT
+        await courseRef.set({
+            id: courseRef.id,
+            title: title.trim(),
+            description: description.trim(),
+            category: category.trim(),
+            price: parseFloat(price) || 0,
+            instructor: instructor || req.user.uid,
+            instructorEmail: req.user.email,
+            status: 'draft', // Start as draft
+            contentCount: 0,
+            enrollmentCount: 0,
+            averageRating: 0,
+            reviewCount: 0,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            createdBy: req.user.uid
+        });
+
+        res.json({
+            success: true,
+            message: 'Course created successfully',
+            courseId: courseRef.id
+        });
+
     } catch (error) {
-        console.error('Create course error:', error);
-        res.status(500).json({ error: 'Failed to create course' });
+        console.error('❌ Create course error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message || 'Failed to create course' 
+        });
     }
 });
 
-// Update course
+/**
+ * Update course
+ * PUT /api/courses/admin/:courseId
+ */
 router.put('/admin/:courseId', authenticate, requireAdmin, async (req, res) => {
     try {
-        const courseData = { id: req.params.courseId, ...req.body };
-        const result = await courseService.saveCourse(courseData, req.user.uid);
-        res.json(result);
+        const { courseId } = req.params;
+        const updateData = req.body;
+
+        // Add timestamp
+        updateData.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+
+        const db = admin.firestore();
+        await db.collection('courses').doc(courseId).update(updateData);
+
+        res.json({
+            success: true,
+            message: 'Course updated successfully'
+        });
+
     } catch (error) {
-        console.error('Update course error:', error);
-        res.status(500).json({ error: 'Failed to update course' });
+        console.error('❌ Update course error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message || 'Failed to update course' 
+        });
     }
 });
 
-// Delete course
+/**
+ * Delete course (cascade delete)
+ * DELETE /api/courses/admin/:courseId
+ */
 router.delete('/admin/:courseId', authenticate, requireAdmin, async (req, res) => {
     try {
-        const result = await courseService.deleteCourse(req.params.courseId, req.user.uid);
-        res.json(result);
+        const { courseId } = req.params;
+
+        const db = admin.firestore();
+
+        // Get all course contents
+        const contentsSnap = await db.collection('course_contents')
+            .where('courseId', '==', courseId)
+            .get();
+
+        // Delete files from Google Drive
+        for (const contentDoc of contentsSnap.docs) {
+            const content = contentDoc.data();
+            if (content.googleDriveFileId) {
+                await googleDriveService.deleteFile(content.googleDriveFileId);
+            }
+        }
+
+        // Delete all content records from Firestore
+        const batch = db.batch();
+        contentsSnap.docs.forEach(doc => {
+            batch.delete(doc.ref);
+        });
+        await batch.commit();
+
+        // Delete course
+        await db.collection('courses').doc(courseId).delete();
+
+        // Delete enrollments
+        const enrollmentsSnap = await db.collection('enrollments')
+            .where('courseId', '==', courseId)
+            .get();
+
+        const batch2 = db.batch();
+        enrollmentsSnap.docs.forEach(doc => {
+            batch2.delete(doc.ref);
+        });
+        await batch2.commit();
+
+        res.json({
+            success: true,
+            message: 'Course deleted successfully'
+        });
+
     } catch (error) {
-        console.error('Delete course error:', error);
-        res.status(500).json({ error: 'Failed to delete course' });
+        console.error('❌ Delete course error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message || 'Failed to delete course' 
+        });
     }
 });
 
-// Get course statistics for admin
+/**
+ * Get course statistics for admin dashboard
+ * GET /api/courses/admin/statistics
+ */
 router.get('/admin/statistics', authenticate, requireAdmin, async (req, res) => {
     try {
-        const stats = await courseService.getCourseStatistics();
-        res.json({ success: true, ...stats });
+        const db = admin.firestore();
+
+        // Total courses
+        const coursesSnap = await db.collection('courses').get();
+        const totalCourses = coursesSnap.size;
+
+        // Total enrollments
+        const enrollmentsSnap = await db.collection('enrollments').get();
+        const totalEnrollments = enrollmentsSnap.size;
+
+        // Total certificates
+        const certificatesSnap = await db.collection('certificates').get();
+        const totalCertificates = certificatesSnap.size;
+
+        // Revenue (if applicable)
+        const paymentsSnap = await db.collection('payments')
+            .where('status', '==', 'completed')
+            .get();
+
+        let totalRevenue = 0;
+        paymentsSnap.forEach(doc => {
+            totalRevenue += doc.data().amount || 0;
+        });
+
+        res.json({
+            success: true,
+            statistics: {
+                totalCourses,
+                totalEnrollments,
+                totalCertificates,
+                totalRevenue,
+                averageCoursePrice: totalCourses > 0 ? 
+                    coursesSnap.docs.reduce((sum, doc) => sum + (doc.data().price || 0), 0) / totalCourses : 0
+            }
+        });
+
     } catch (error) {
-        console.error('Get course statistics error:', error);
-        res.status(500).json({ error: 'Failed to get course statistics' });
+        console.error('❌ Get statistics error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message || 'Failed to get statistics' 
+        });
     }
 });
 
-// Get all courses for admin management
+/**
+ * Get all courses for admin (with pagination)
+ * GET /api/courses/admin/all?page=1&limit=50&status=published
+ */
 router.get('/admin/all', authenticate, requireAdmin, async (req, res) => {
     try {
         const { page = 1, limit = 50, status } = req.query;
-        
-        let query = req.db.collection('courses');
-        
+
+        let query = admin.firestore().collection('courses');
+
         if (status) {
             query = query.where('status', '==', status);
         }
-        
-        query = query.orderBy('createdAt', 'desc');
-        
-        const snapshot = await query.get();
-        const courses = snapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data()
-        }));
+
+        const snapshot = await query
+            .orderBy('createdAt', 'desc')
+            .get();
+
+        const courses = snapshot.docs
+            .slice((parseInt(page) - 1) * parseInt(limit), parseInt(page) * parseInt(limit))
+            .map(doc => ({
+                id: doc.id,
+                ...doc.data(),
+                createdAt: doc.data().createdAt?.toDate()
+            }));
 
         res.json({
             success: true,
             courses,
-            total: courses.length,
+            total: snapshot.size,
             page: parseInt(page),
-            totalPages: Math.ceil(courses.length / limit)
+            limit: parseInt(limit),
+            totalPages: Math.ceil(snapshot.size / parseInt(limit))
         });
+
     } catch (error) {
-        console.error('Get all courses error:', error);
-        res.status(500).json({ error: 'Failed to get courses' });
+        console.error('❌ Get all courses error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message || 'Failed to get courses' 
+        });
     }
 });
 

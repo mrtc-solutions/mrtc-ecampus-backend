@@ -29,7 +29,6 @@ class CourseService {
 
       // Apply search
       if (search) {
-        // This is a simple search - for production, consider using Algolia or ElasticSearch
         query = query.orderBy('title');
       }
 
@@ -356,7 +355,7 @@ class CourseService {
   }
 
   // Process course purchase (for paid courses)
-  async processCoursePurchase(courseId, studentId, paymentData) {
+  async processCoursePurchase(courseId, studentId, studentEmail, paymentData) {
     try {
       const { amount, method, transactionId } = paymentData;
 
@@ -376,6 +375,7 @@ class CourseService {
       const paymentRecord = {
         paymentId,
         studentId,
+        studentEmail,
         courseId,
         courseTitle: course.title,
         amount: paidAmount,
@@ -491,12 +491,27 @@ class CourseService {
     }
   }
 
-  // Create or update course (admin function)
+  // ⭐ CREATE OR UPDATE COURSE WITH GOOGLE DRIVE INTEGRATION
   async saveCourse(courseData, userId) {
     try {
       const courseId = courseData.id || this.db.collection('courses').doc().id;
       const isNew = !courseData.id;
 
+      // 🔥 Upload course files to Google Drive first
+      let courseFileData = {};
+      if (courseData.courseFile) {
+        courseFileData = await googleDriveService.uploadCourseFile(
+          courseData.courseFile,
+          courseId,
+          courseData.title
+        );
+
+        if (!courseFileData.success) {
+          throw new Error(`Failed to upload course file: ${courseFileData.error}`);
+        }
+      }
+
+      // Prepare course metadata
       const course = {
         title: courseData.title,
         description: courseData.description,
@@ -526,6 +541,18 @@ class CourseService {
         totalStudents: isNew ? 0 : courseData.totalStudents || 0,
         totalReviews: isNew ? 0 : courseData.totalReviews || 0,
         averageRating: isNew ? 0 : courseData.averageRating || 0,
+        
+        // 🔥 GOOGLE DRIVE INTEGRATION - Store file metadata
+        googleDrive: {
+          fileId: courseFileData.fileId || null,
+          fileName: courseFileData.fileName || null,
+          fileUrl: courseFileData.webViewLink || null,
+          downloadUrl: courseFileData.downloadLink || null,
+          folderId: courseFileData.folderId || null,
+          uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
+          mimeType: courseFileData.mimeType || null
+        },
+        
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedBy: userId
       };
@@ -535,6 +562,7 @@ class CourseService {
         course.createdBy = userId;
       }
 
+      // Save course metadata to Firestore
       await this.db.collection('courses').doc(courseId).set(course, { merge: true });
 
       // Upload course images to Google Drive if provided
@@ -544,7 +572,11 @@ class CourseService {
           courseId,
           'cover'
         );
-        course.coverImage = driveUrl.url;
+        if (driveUrl.success) {
+          await this.db.collection('courses').doc(courseId).update({
+            coverImage: driveUrl.url
+          });
+        }
       }
 
       if (courseData.promoVideoFile) {
@@ -553,17 +585,65 @@ class CourseService {
           courseId,
           'video'
         );
-        course.promoVideo = driveUrl.url;
+        if (driveUrl.success) {
+          await this.db.collection('courses').doc(courseId).update({
+            promoVideo: driveUrl.url
+          });
+        }
       }
+
+      // 🔥 CREATE DASHBOARD METADATA (For auto-updates)
+      // This is critical for dashboard to track course counts
+      await this.updateDashboardStats(courseId, isNew);
 
       return {
         success: true,
         courseId,
-        message: isNew ? 'Course created successfully' : 'Course updated successfully'
+        message: isNew ? 'Course created successfully' : 'Course updated successfully',
+        googleDrive: courseFileData.success ? courseFileData : null
       };
     } catch (error) {
       console.error('Error saving course:', error);
       throw error;
+    }
+  }
+
+  // ⭐ UPDATE DASHBOARD STATISTICS (Real-time updates)
+  async updateDashboardStats(courseId, isNew = false) {
+    try {
+      // Get total counts for dashboard
+      const coursesSnapshot = await this.db.collection('courses')
+        .where('isPublished', '==', true)
+        .get();
+
+      const enrollmentsSnapshot = await this.db.collection('enrollments')
+        .where('status', '==', 'active')
+        .get();
+
+      const certificatesSnapshot = await this.db.collection('certificates')
+        .where('status', '==', 'issued')
+        .get();
+
+      const usersSnapshot = await this.db.collection('users')
+        .where('role', '==', 'student')
+        .get();
+
+      // Update dashboard metadata collection
+      await this.db.collection('dashboard_stats').doc('admin').set({
+        totalCourses: coursesSnapshot.size,
+        totalEnrollments: enrollmentsSnapshot.size,
+        totalCertificates: certificatesSnapshot.size,
+        totalStudents: usersSnapshot.size,
+        lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+        updatedBy: 'system'
+      }, { merge: true });
+
+      console.log('✅ Dashboard stats updated');
+      return true;
+    } catch (error) {
+      console.error('Error updating dashboard stats:', error);
+      // Don't throw - dashboard update failure shouldn't block course creation
+      return false;
     }
   }
 
@@ -584,6 +664,9 @@ class CourseService {
           archivedBy: userId
         });
 
+        // Update dashboard stats
+        await this.updateDashboardStats(courseId);
+
         return {
           success: true,
           message: 'Course archived (has enrolled students)'
@@ -591,10 +674,16 @@ class CourseService {
       }
 
       // Delete from Google Drive
-      await googleDriveService.deleteCourseFiles(courseId);
+      const courseDoc = await this.db.collection('courses').doc(courseId).get();
+      if (courseDoc.exists && courseDoc.data().googleDrive?.fileId) {
+        await googleDriveService.deleteFile(courseDoc.data().googleDrive.fileId);
+      }
 
       // Delete course document
       await this.db.collection('courses').doc(courseId).delete();
+
+      // Update dashboard stats
+      await this.updateDashboardStats(courseId);
 
       return {
         success: true,
@@ -608,20 +697,21 @@ class CourseService {
 
   // Email functions
   async sendEnrollmentEmail(studentEmail, courseTitle, isFree) {
-    // Implementation using your email service
-    console.log(`Enrollment email sent to ${studentEmail} for course ${courseTitle}`);
+    try {
+      console.log(`Enrollment email sent to ${studentEmail} for course ${courseTitle}`);
+      // Integration with your email service
+    } catch (error) {
+      console.error('Error sending enrollment email:', error);
+    }
   }
 
   async sendPaymentConfirmationEmail(studentEmail, courseTitle, amount, method) {
-    // Implementation using your email service
-    console.log(`Payment confirmation sent to ${studentEmail} for ${courseTitle}`);
-  }
-
-  // Generate course certificate
-  async generateCourseCertificate(courseId, studentId) {
-    // Certificate generation logic
-    // This should integrate with your certificate service
-    console.log(`Generating certificate for student ${studentId} in course ${courseId}`);
+    try {
+      console.log(`Payment confirmation sent to ${studentEmail} for ${courseTitle}`);
+      // Integration with your email service
+    } catch (error) {
+      console.error('Error sending payment email:', error);
+    }
   }
 
   // Get course recommendations
