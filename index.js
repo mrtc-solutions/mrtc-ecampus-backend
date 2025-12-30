@@ -1,6 +1,6 @@
 // =============================================
-// MRTC ECAMPUS - STANDALONE BACKEND v3.0
-// FIXED VERSION FOR RENDER DEPLOYMENT
+// MRTC ECAMPUS - BACKEND API v3.1
+// VERCEL SERVERLESS DEPLOYMENT
 // =============================================
 
 const express = require('express');
@@ -40,7 +40,7 @@ try {
   const projectId = process.env.FIREBASE_ADMIN_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || 'mrtc-ecampus';
   const clientEmail = process.env.FIREBASE_ADMIN_CLIENT_EMAIL || process.env.FIREBASE_CLIENT_EMAIL;
   const privateKey = process.env.FIREBASE_ADMIN_PRIVATE_KEY || process.env.FIREBASE_PRIVATE_KEY;
-  
+
   if (!projectId || !clientEmail || !privateKey) {
     console.warn('⚠️ Firebase Admin credentials incomplete. Running in limited mode.');
     console.warn('⚠️ Some features requiring Firebase Admin will be disabled.');
@@ -62,9 +62,9 @@ try {
       console.warn('⚠️ Could not parse private key:', keyError.message);
       cleanPrivateKey = privateKey; // Use as-is
     }
-    
+
     console.log('✅ Firebase credentials found, initializing...');
-    
+
     const serviceAccount = {
       type: "service_account",
       project_id: projectId,
@@ -78,7 +78,7 @@ try {
       client_x509_cert_url: `https://www.googleapis.com/robot/v1/metadata/x509/${encodeURIComponent(clientEmail)}`,
       universe_domain: "googleapis.com"
     };
-    
+
     // Initialize Firebase Admin
     firebaseApp = admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
@@ -86,7 +86,7 @@ try {
       databaseURL: `https://${projectId}.firebaseio.com`,
       storageBucket: `${projectId}.appspot.com`
     });
-    
+
     db = admin.firestore();
     console.log('✅ Firebase Admin initialized successfully');
     console.log('✅ Firestore database connected');
@@ -101,7 +101,7 @@ try {
 // ===== SIMPLE FIREBASE ALTERNATIVE (For testing) =====
 if (!firebaseApp) {
   console.log('🔧 Using simulated Firebase for testing...');
-  
+
   // Simulated database for testing
   const simulatedDB = {
     collection: (name) => ({
@@ -118,7 +118,7 @@ if (!firebaseApp) {
       })
     })
   };
-  
+
   db = simulatedDB;
 }
 
@@ -129,8 +129,8 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
-app.use(cors({ 
-  origin: function(origin, callback) {
+app.use(cors({
+  origin: function (origin, callback) {
     // Allow all origins for development
     const allowedOrigins = [
       'https://mrtc-ecampus.web.app',
@@ -141,14 +141,14 @@ app.use(cors({
       'https://mrtc-ecampus.vercel.app',
       process.env.FRONTEND_URL
     ].filter(Boolean);
-    
+
     if (!origin || allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
       callback(null, true);
     } else {
       callback(null, true); // Allow all in development
     }
   },
-  credentials: true 
+  credentials: true
 }));
 
 app.use(compression());
@@ -199,17 +199,17 @@ const authenticate = async (req, res, next) => {
   try {
     // Skip authentication for public endpoints
     const publicEndpoints = [
-      '/api/health', 
-      '/api/auth/login', 
+      '/api/health',
+      '/api/auth/login',
       '/api/auth/signup',
       '/api/courses',
       '/api/currency/convert'
     ];
-    
+
     if (publicEndpoints.some(endpoint => req.path.startsWith(endpoint))) {
       return next();
     }
-    
+
     // Check if Firebase is available
     if (!firebaseApp || typeof admin.auth === 'undefined') {
       // Simulate authentication for development
@@ -220,7 +220,7 @@ const authenticate = async (req, res, next) => {
       };
       return next();
     }
-    
+
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ error: 'Unauthorized: No token provided' });
@@ -229,11 +229,11 @@ const authenticate = async (req, res, next) => {
     const token = authHeader.split('Bearer ')[1];
     const decodedToken = await admin.auth().verifyIdToken(token);
     req.user = decodedToken;
-    
+
     next();
   } catch (error) {
     console.error('Authentication error:', error.message);
-    
+
     // For development, simulate user
     if (process.env.NODE_ENV === 'development') {
       req.user = {
@@ -243,7 +243,7 @@ const authenticate = async (req, res, next) => {
       };
       return next();
     }
-    
+
     res.status(401).json({ error: 'Unauthorized: Invalid token' });
   }
 };
@@ -258,14 +258,14 @@ app.use('/api/certificates/', authenticate);
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    
+
     // Basic validation
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
     }
-    
+
     console.log(`🔐 Login attempt for: ${email}`);
-    
+
     // Special admin login
     if (email === process.env.ADMIN_EMAIL && password === (process.env.ADMIN_INITIAL_PASSWORD || '33336666')) {
       console.log('✅ Admin login successful');
@@ -282,7 +282,7 @@ app.post('/api/auth/login', async (req, res) => {
         expiresIn: 3600
       });
     }
-    
+
     // For now, accept any student login
     console.log('✅ Student login accepted');
     res.json({
@@ -297,10 +297,10 @@ app.post('/api/auth/login', async (req, res) => {
       token: 'student-temp-token-' + crypto.randomBytes(16).toString('hex'),
       expiresIn: 3600
     });
-    
+
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Internal server error',
       message: process.env.NODE_ENV === 'development' ? error.message : 'Login failed'
     });
@@ -310,13 +310,13 @@ app.post('/api/auth/login', async (req, res) => {
 app.post('/api/auth/signup', async (req, res) => {
   try {
     const { email, password, displayName } = req.body;
-    
+
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
     }
-    
+
     console.log(`📝 Signup attempt for: ${email}`);
-    
+
     res.json({
       success: true,
       user: {
@@ -331,10 +331,10 @@ app.post('/api/auth/signup', async (req, res) => {
       expiresIn: 3600,
       message: 'Account created successfully'
     });
-    
+
   } catch (error) {
     console.error('Signup error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Internal server error',
       message: process.env.NODE_ENV === 'development' ? error.message : 'Signup failed'
     });
@@ -398,16 +398,16 @@ app.get('/api/courses', async (req, res) => {
         language: 'English'
       }
     ];
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       courses,
       total: courses.length,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error('Courses error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to fetch courses',
       message: process.env.NODE_ENV === 'development' ? error.message : 'Please try again later'
     });
@@ -418,15 +418,15 @@ app.get('/api/courses', async (req, res) => {
 app.post('/api/payments/create-order', async (req, res) => {
   try {
     const { courseId, amount, currency, paymentMethod } = req.body;
-    
+
     // Validation
     if (!courseId || !amount || !currency || !paymentMethod) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
-    
+
     // Generate order ID
     const orderId = `ORD-${Date.now()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-    
+
     res.json({
       success: true,
       order: {
@@ -440,7 +440,7 @@ app.post('/api/payments/create-order', async (req, res) => {
       },
       message: 'Order created successfully'
     });
-    
+
   } catch (error) {
     console.error('Payment creation error:', error);
     res.status(500).json({ error: 'Payment processing failed' });
@@ -451,18 +451,18 @@ app.post('/api/payments/create-order', async (req, res) => {
 app.get('/api/currency/convert', (req, res) => {
   try {
     const { amount, from, to } = req.query;
-    
+
     if (!amount || !from || !to) {
       return res.status(400).json({ error: 'Missing required parameters' });
     }
-    
+
     const numericAmount = parseFloat(amount);
     if (isNaN(numericAmount)) {
       return res.status(400).json({ error: 'Invalid amount' });
     }
-    
+
     const exchangeRate = parseInt(process.env.EXCHANGE_RATE) || 800;
-    
+
     let convertedAmount;
     if (from === 'USD' && to === 'MWK') {
       convertedAmount = numericAmount * exchangeRate;
@@ -471,7 +471,7 @@ app.get('/api/currency/convert', (req, res) => {
     } else {
       return res.status(400).json({ error: 'Unsupported currency pair' });
     }
-    
+
     res.json({
       success: true,
       originalAmount: numericAmount,
@@ -481,7 +481,7 @@ app.get('/api/currency/convert', (req, res) => {
       exchangeRate,
       timestamp: new Date().toISOString()
     });
-    
+
   } catch (error) {
     console.error('Currency conversion error:', error);
     res.status(500).json({ error: 'Currency conversion failed' });
@@ -491,7 +491,7 @@ app.get('/api/currency/convert', (req, res) => {
 // ===== SIMPLE ERROR HANDLING =====
 app.use((err, req, res, next) => {
   console.error('Server error:', err.message);
-  
+
   res.status(err.status || 500).json({
     error: 'Internal server error',
     message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong',
@@ -501,7 +501,7 @@ app.use((err, req, res, next) => {
 
 // 404 Handler
 app.use('*', (req, res) => {
-  res.status(404).json({ 
+  res.status(404).json({
     error: 'Endpoint not found',
     message: `The requested endpoint ${req.originalUrl} does not exist`,
     availableEndpoints: [
@@ -514,16 +514,20 @@ app.use('*', (req, res) => {
   });
 });
 
-// ===== START SERVER =====
-const PORT = process.env.PORT || 3000;
-const HOST = '0.0.0.0';
+// ===== VERCEL SERVERLESS EXPORT =====
+// For Vercel, we export the app instead of calling listen()
+module.exports = app;
 
-app.listen(PORT, HOST, () => {
-  console.log('='.repeat(60));
-  console.log('🚀 MRTC eCampus Backend API v3.0');
-  console.log('📍 Server running on port', PORT);
-  console.log('🌐 Environment:', process.env.NODE_ENV || 'development');
-  console.log('💰 Exchange Rate: 1 USD =', process.env.EXCHANGE_RATE || 800, 'MWK');
-  console.log('🔗 Health Check:', `http://localhost:${PORT}/api/health`);
-  console.log('='.repeat(60));
-});
+// For local development, start the server
+if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log('='.repeat(60));
+    console.log('🚀 MRTC eCampus Backend API v3.1');
+    console.log('📍 Server running on port', PORT);
+    console.log('🌐 Environment:', process.env.NODE_ENV || 'development');
+    console.log('💰 Exchange Rate: 1 USD =', process.env.EXCHANGE_RATE || 800, 'MWK');
+    console.log('🔗 Health Check:', `http://localhost:${PORT}/api/health`);
+    console.log('='.repeat(60));
+  });
+}
