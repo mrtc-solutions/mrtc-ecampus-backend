@@ -19,7 +19,7 @@
     "firebase",
     "nodejs"
   ],
-  "author": "Your Name",
+  "author": "MRTC Solutions",
   "license": "ISC",
   "engines": {
     "node": "18.x",
@@ -46,15 +46,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/YourUsername/mrtc-ecampus-backend.git"
+    "url": "https://github.com/mrtc-solutions/mrtc-ecampus-backend.git"
   },
   "bugs": {
-    "url": "https://github.com/YourUsername/mrtc-ecampus-backend/issues"
+    "url": "https://github.com/mrtc-solutions/mrtc-ecampus-backend/issues"
   },
-  "homepage": "https://github.com/YourUsername/mrtc-ecampus-backend#readme"
-  },
-  "scripts": {
-    "dev": "live-server . --port=8080 --open=login.html",
-    "test": "echo \"Error: no test specified\" && exit 1"
-  }
+  "homepage": "https://github.com/mrtc-solutions/mrtc-ecampus-backend#readme"
 }
